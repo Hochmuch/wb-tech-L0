@@ -2,51 +2,99 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 	"wb-tech-L0/internal/cache"
 	"wb-tech-L0/internal/consumer"
+	"wb-tech-L0/internal/db"
 	"wb-tech-L0/internal/httpapi"
 	"wb-tech-L0/internal/repository"
 	"wb-tech-L0/internal/service"
+
+	"golang.org/x/sync/errgroup"
 )
 
 func main() {
-	databaseURL := "postgres://user:password@postgres:5432/db"
-	time.Sleep(5 * time.Second)
+	dbUser := os.Getenv("DB_USER")
+	dbPassword := os.Getenv("DB_PASSWORD")
+	dbHost := os.Getenv("DB_HOST")
+	dbPort := os.Getenv("DB_PORT")
+	dbName := os.Getenv("DB_NAME")
+	dbSSLMode := os.Getenv("DB_SSLMODE")
 
-	config, err := pgxpool.ParseConfig(databaseURL)
+	dbURL := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s", dbUser, dbPassword, dbHost, dbPort, dbName, dbSSLMode)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	g, gctx := errgroup.WithContext(ctx)
+
+	postgresDb, err := db.New(gctx, dbURL)
 	if err != nil {
-		fmt.Printf("Unable to parse config: %v\n", err)
+		log.Fatalf("Couldn't connect to database")
 		return
 	}
-	ctx := context.Background()
-	pool, err := pgxpool.NewWithConfig(ctx, config)
-	if err != nil {
-		fmt.Printf("Unable to create connection pool: %v\n", err)
-		return
-	}
-	defer pool.Close()
+	defer postgresDb.Close()
 
-	repo := repository.New(ctx, pool)
-	c := cache.New()
-	serv := service.New(ctx, repo, c)
-	cons := consumer.New(consumer.Config{Brokers: []string{"kafka:9092"},
-		Topic:   "topic",
-		GroupID: "group"},
-		consumer.HandleMessage(ctx, serv))
-
-	go func() {
-		if err := cons.Run(ctx); err != nil {
-			log.Fatalf("Kafka consumer error: %v", err)
+	redisAddress := os.Getenv("REDIS_ADDRESS")
+	redisConfig := cache.Config{Addr: redisAddress}
+	redisCache := cache.NewRedisCache(redisConfig)
+	defer func(redisCache *cache.RedisCache) {
+		if err := redisCache.Close(); err != nil {
+			log.Println("Error closing cache")
 		}
-	}()
+	}(redisCache)
 
-	hndlr := httpapi.NewHandler(serv)
+	repo := repository.NewCachedDB(postgresDb, redisCache)
+	svc := service.New(gctx, repo)
+
+	consumerConfig := consumer.Config{
+		Brokers: []string{"kafka:9092"},
+		Topic:   "topic",
+		GroupID: "group",
+	}
+	cons := consumer.New(
+		consumerConfig,
+		consumer.HandleMessage(gctx, svc),
+	)
+
+	hndlr := httpapi.NewHandler(svc)
 	router := httpapi.NewRouter(hndlr)
 
-	http.ListenAndServe(":8080", router)
+	server := &http.Server{
+		Addr:    ":8080",
+		Handler: router,
+	}
+
+	g.Go(func() error {
+		return server.ListenAndServe()
+	})
+
+	g.Go(func() error {
+		return cons.Run(gctx)
+	})
+
+	<-ctx.Done()
+	log.Println("shutdown signal received")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	err = server.Shutdown(shutdownCtx)
+	if err != nil {
+		log.Printf("http shutdown error: %v", err)
+	}
+	err = cons.Close()
+	if err != nil {
+		log.Printf("consumer shutdown error: %v", err)
+	}
+
+	if err = g.Wait(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Printf("exit with error: %v", err)
+	}
 }

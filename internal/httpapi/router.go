@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"html/template"
+	"log"
 	"net/http"
 )
 
@@ -14,13 +15,20 @@ func NewRouter(h *Handler) http.Handler {
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, err := w.Write([]byte("OK"))
+		if err != nil {
+			return
+		}
 	})
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" && r.URL.Query().Get("order_uid") == "" {
 			tmpl := template.Must(template.ParseFiles("templates/index.html"))
-			tmpl.Execute(w, nil)
+			err := tmpl.Execute(w, nil)
+			if err != nil {
+				log.Println(err)
+				return
+			}
 			return
 		}
 

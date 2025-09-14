@@ -4,11 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"net/http"
 	"strings"
 	"wb-tech-L0/internal/service"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 type Handler struct {
@@ -20,9 +21,9 @@ func NewHandler(service *service.Service) *Handler {
 }
 
 func (h *Handler) GetOrder(w http.ResponseWriter, r *http.Request) {
-	fmt.Println("LISTEN HERE:", r.URL.String())
 	route := strings.Split(r.URL.String(), "/")
-	// тут внимательно, видимо, первый элемент слайса - пустая строка
+
+	// тут внимательно, видимо, начальный элемент слайса - пустая строка
 	orderUID, err := uuid.Parse(route[len(route)-1])
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -31,7 +32,6 @@ func (h *Handler) GetOrder(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	order, err := h.service.GetOrder(r.Context(), orderUID)
-	fmt.Printf("ORDER: %v  UID: %v\n", order, orderUID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.Error(w, fmt.Sprintf("invalid id: %v", err), http.StatusNotFound)

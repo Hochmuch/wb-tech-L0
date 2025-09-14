@@ -1,50 +1,66 @@
 package cache
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+	"wb-tech-L0/domain/model"
+	"wb-tech-L0/internal/repository"
+
 	"github.com/google/uuid"
-	"wb-tech-L0/internal/model"
+	"github.com/redis/go-redis/v9"
 )
 
-type Cache struct {
-	orders map[uuid.UUID]*model.Order
-	queue  chan uuid.UUID
+type RedisCache struct {
+	client *redis.Client
+	TTL    time.Duration
 }
 
-func New() *Cache {
-	c := &Cache{}
-	c.orders = make(map[uuid.UUID]*model.Order)
-	c.queue = make(chan uuid.UUID, 100)
-	return c
-}
+func NewRedisCache(cfg Config) *RedisCache {
+	client := redis.NewClient(&redis.Options{
+		Addr: cfg.Addr,
+	})
 
-func (c *Cache) HasSpace() bool {
-	return 100-len(c.orders) > 0
-}
-
-func (c *Cache) AddOrder(order *model.Order) {
-	if c.HasSpace() {
-		c.orders[order.OrderUID] = order
-		c.queue <- order.OrderUID
-	} else {
-		toDelete := <-c.queue
-		delete(c.orders, toDelete)
-
-		c.orders[order.OrderUID] = order
-		c.queue <- order.OrderUID
+	return &RedisCache{
+		client: client,
+		TTL:    cfg.TTL,
 	}
 }
 
-func (c *Cache) GetOrder(orderUID uuid.UUID) (*model.Order, bool) {
-	order, ok := c.orders[orderUID]
-	return order, ok
+func (r *RedisCache) AddOrder(ctx context.Context, order *model.Order) error {
+	orderJson, err := json.Marshal(order)
+	if err != nil {
+		log.Println(err)
+		return err
+	}
+	err = r.client.Set(ctx, order.OrderUID.String(), string(orderJson), r.TTL).Err()
+	return err
 }
 
-func (c *Cache) GetCache(orders []*model.Order) {
-	c.orders = make(map[uuid.UUID]*model.Order)
-	c.queue = make(chan uuid.UUID, 100)
-
-	for _, order := range orders {
-		c.queue <- order.OrderUID
-		c.orders[order.OrderUID] = order
+func (r *RedisCache) GetOrder(ctx context.Context, uid uuid.UUID) (*model.Order, error) {
+	orderJson, err := r.client.Get(ctx, uid.String()).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, repository.ErrOrderNotFound
+		}
+		return nil, fmt.Errorf("cache get order: %w", err)
 	}
+
+	var order model.Order
+	err = json.Unmarshal([]byte(orderJson), &order)
+	if err != nil {
+		return nil, fmt.Errorf("cache unmarshal order: %w", err)
+	}
+
+	return &order, nil
+}
+
+func (r *RedisCache) Close() error {
+	if r == nil || r.client == nil {
+		return nil
+	}
+	return r.client.Close()
 }

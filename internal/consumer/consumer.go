@@ -3,16 +3,20 @@ package consumer
 import (
 	"context"
 	"errors"
-	"github.com/segmentio/kafka-go"
 	"log"
 	"time"
+
+	"github.com/go-playground/validator/v10"
+
+	"github.com/segmentio/kafka-go"
 )
 
-type MessageHandler func(kafka.Message) error
+type MessageHandler func(*validator.Validate, kafka.Message) error
 
 type Consumer struct {
-	reader  *kafka.Reader
-	handler MessageHandler
+	reader    *kafka.Reader
+	handler   MessageHandler
+	validator *validator.Validate
 }
 
 func New(cfg Config, handler MessageHandler) *Consumer {
@@ -21,7 +25,9 @@ func New(cfg Config, handler MessageHandler) *Consumer {
 		Topic:   cfg.Topic,
 		GroupID: cfg.GroupID,
 	}),
-		handler: handler}
+		handler:   handler,
+		validator: validator.New(),
+	}
 }
 
 func (c *Consumer) Run(ctx context.Context) error {
@@ -41,7 +47,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 				continue
 			}
 
-			if err := c.handler(msg); err != nil {
+			if err := c.handler(c.validator, msg); err != nil {
 				log.Println("Error while handling message.", err)
 			} else {
 				if err := c.reader.CommitMessages(ctx); err != nil {
