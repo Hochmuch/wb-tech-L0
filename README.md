@@ -8,10 +8,6 @@
 - Redis
 - Docker, Docker Compose
 
-## Демонстрация
-![ezgif-26a4a38df78c75](https://github.com/user-attachments/assets/887073a1-58a9-40a4-8462-9385e5784ed3)
-
-
 ## Запуск
 
 1. **Клонируйте репозиторий**
